@@ -21,28 +21,20 @@
 # - label_top_abundant: número de taxones más abundantes a etiquetar (default: 15)
 # - label_invaders: número de invasores a etiquetar (default: 10)
 
-library(tidyverse)
-library(ggplot2)
-library(cowplot)
-library(RColorBrewer)
-library(ggrepel)
-# library(scales) # Necesario para hue_pal()
-
-# --- FUNCIÓN PRINCIPAL DE COMPARACIÓN RAINBOW/TAXONOMÍA -----------------------
 rainbow_comparison_plot <- function(
-    abundance_data,
-    metadata,
-    treatment_col,
-    sample_col = "Sample",
-    center_treatment = NULL,
-    highlight_invaders = FALSE,
-    taxonomy_table = NULL,
-    color_by_taxon_col = NULL,
-    taxon_level = NULL,
-    output_dir = NULL,
-    show_labels = FALSE,
-    label_top_abundant = 15,
-    label_invaders = 10
+  abundance_data,
+  metadata,
+  treatment_col,
+  sample_col = "Sample",
+  center_treatment = NULL,
+  highlight_invaders = FALSE,
+  taxonomy_table = NULL,
+  color_by_taxon_col = NULL,
+  taxon_level = NULL,
+  output_dir = NULL,
+  show_labels = FALSE,
+  label_top_abundant = 15,
+  label_invaders = 10
 ){
   
   # Determinar si se usa coloreado taxonómico
@@ -86,6 +78,7 @@ rainbow_comparison_plot <- function(
   
   # Obtener columnas de muestras para cada tratamiento
   treatment_samples <- list()
+  treatment_cols    <- list()
   
   for (treatment in treatments) {
     treatment_metadata <- metadata %>%
@@ -102,11 +95,11 @@ rainbow_comparison_plot <- function(
   }
   
   # Calcular abundancias medias para cada tratamiento
-  all_sample_cols <- unlist(treatment_cols)
+  all_sample_cols <- unlist(treatment_samples)
   abundance_means <- abundance_data %>%
     mutate(
       across(all_of(all_sample_cols[all_sample_cols %in% colnames(abundance_data)]), 
-             ~as.numeric(replace_na(., 0)))
+              ~as.numeric(replace_na(., 0)))
     )
   
   # Agregar columnas de medias por tratamiento
@@ -138,7 +131,7 @@ rainbow_comparison_plot <- function(
     )
   
   # === CLASIFICACIÓN (SIEMPRE NECESARIA) ===========================
-  other_treatments <- treatments[treatments != center_treatment_col]
+  other_treatments <- treatments[treatments != center_treatment]
   
   abundance_means <- abundance_means %>%
     mutate(
@@ -234,12 +227,12 @@ rainbow_comparison_plot <- function(
     if (highlight_invaders) {
       # Highlight Invaders: Colorear Invasores, Residentes en Gris
       color_group_calc <- with(plot_data_long, 
-                               if_else(is_invader, paste0("TotalRank_", invader_rank), "Resident"))
+                                if_else(is_invader, paste0("TotalRank_", invader_rank), "Resident"))
       line_color_calc <- color_group_calc # Las líneas deben ser coloreadas
     } else {
       # Estándar: Colorear Residentes por Rank, Invasores en Gris
       color_group_calc <- with(plot_data_long, 
-                               if_else(is_invader, "Invader", paste0("Rank_", center_treatment_rank)))
+                                if_else(is_invader, "Invader", paste0("Rank_", center_treatment_rank)))
       line_color_calc <- with(plot_data_long, 
                               if_else(is_invader, NA_character_, color_group_calc)) # Las líneas de invasores son NA
     }
@@ -325,7 +318,7 @@ rainbow_comparison_plot <- function(
       plot_title <- "Comparación Rainbow - Highlight Invaders"
       plot_subtitle <- "Invasores coloreados por abundancia (Rainbow), Residentes en gris"
       plot_caption <- paste0("Colores: Rainbow = invasores (ROJO=más abundante), Gris = residentes",
-                             if(show_labels) paste0("\nEtiquetas: Top ", label_top_abundant, " abundantes + Top ", label_invaders, " invasores") else "\nSin etiquetas")
+                              if(show_labels) paste0("\nEtiquetas: Top ", label_top_abundant, " abundantes + Top ", label_invaders, " invasores") else "\nSin etiquetas")
       
     } else {
       # Estándar: Gris para invasores, rainbow para abundancia
@@ -343,22 +336,23 @@ rainbow_comparison_plot <- function(
       plot_title <- "Comparación Rainbow (Ranking por Abundancia)"
       plot_subtitle <- paste0("Orden: ", paste(treatments, collapse = " -> "))
       plot_caption <- paste0("Colores: Rainbow = abundancia, Gris = invasores",
-                             if(show_labels) paste0("\nEtiquetas: Top ", label_top_abundant, " abundantes + Top ", label_invaders, " invasores") else "\nSin etiquetas")
+                              if(show_labels) paste0("\nEtiquetas: Top ", label_top_abundant, " abundantes + Top ", label_invaders, " invasores") else "\nSin etiquetas")
     }
     color_guide <- "none"
   }
   
   # Título común
   plot_title <- paste0(plot_title, 
-                       if(!is.null(taxon_level)) paste0(" - ", taxon_level) else "",
-                       " - ", paste(treatments, collapse = " vs "))
+                        if(!is.null(taxon_level)) paste0(" - ", taxon_level) else "",
+                        " - ", paste(treatments, collapse = " vs "))
   
   # Crear el plot
   p <- ggplot(plot_data_long, aes(x = condition_jitter, y = abundance)) +
     # Borde blanco para highlight (si aplica)
     {if(highlight_invaders && !use_taxonomy_coloring) geom_point(aes(color = color_group, size = point_size + 0.5), color = "white", alpha = 1, shape = 16)} +
     # Líneas y puntos principales
-    geom_line(aes(group = clade_name, color = line_color), alpha = 0.5, linewidth = 0.5) +
+    geom_line(data = plot_data_long %>% filter(abundance > 0), #> no poner líneas hacia los taxones en Y=0
+              aes(group = clade_name, color = line_color), alpha = 0.5, linewidth = 0.5) +
     geom_point(aes(color = color_group, size = point_size), alpha = 0.8) +
     scale_color_manual(
       values = color_scheme,
