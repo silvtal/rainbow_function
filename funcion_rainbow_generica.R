@@ -1,4 +1,4 @@
-# funcion_rainbow_generica.R
+# rainbow_function_generica_unificada.R
 # Función genérica para crear plots de comparación rainbow/taxonomía entre tratamientos
 # 
 # === DESCRIPCIÓN ===
@@ -11,7 +11,8 @@
 # - metadata: tabla de metadatos con información de tratamientos
 # - treatment_col: nombre de la columna en metadata que indica el tratamiento
 # - sample_col: nombre de la columna en metadata que indica el ID de muestra (default: "Sample")
-# - center_treatment: tratamiento que va en el centro del plot (para ordenamiento)
+# - baseline_treatment: tratamiento de referencia (baseline) para clasificación de invasores/residentes
+# - baseline_treatment_position: posición en el eje X donde colocar baseline_treatment (NULL = posición 1 por defecto)
 # - highlight_invaders: booleano para resaltar invasores (solo aplica con coloring rainbow)
 # - taxonomy_table: Tabla de taxonomía con una primera columna indicando el taxón (por ej la secuencia, "otu1"...) y las columnas taxonómicas
 # - color_by_taxon_col: Nombre de la columna taxonómica a usar para colorear (ej: "class")
@@ -26,7 +27,8 @@ rainbow_comparison_plot <- function(
   metadata,
   treatment_col,
   sample_col = "Sample",
-  center_treatment = NULL,
+  baseline_treatment = NULL,
+  baseline_treatment_position = NULL,
   highlight_invaders = FALSE,
   taxonomy_table = NULL,
   color_by_taxon_col = NULL,
@@ -52,17 +54,38 @@ rainbow_comparison_plot <- function(
   }
   
   # Obtener tratamientos únicos
-  treatments <- unique(metadata[[treatment_col]])
-  treatments <- treatments[!is.na(treatments)]
+  treatments <- metadata[[treatment_col]]
+  treatments <- unique(treatments)
+  
+  # =============================================================================================
   
   if (length(treatments) < 2) {
     stop("Se necesitan al menos 2 tratamientos para la comparación")
   }
   
-  # Si se especifica center_treatment, reordenar tratamientos
-  if (!is.null(center_treatment) && center_treatment %in% treatments) {
-    other_treatments <- setdiff(treatments, center_treatment)
-    treatments <- c(other_treatments[1], center_treatment, other_treatments[-1])
+  # Si se especifica baseline_treatment, reordenar tratamientos según baseline_treatment_position
+  if (!is.null(baseline_treatment) && baseline_treatment %in% treatments) {
+    # Si baseline_treatment_position es NULL, usar posición 2 por defecto
+    if (is.null(baseline_treatment_position)) {
+      baseline_treatment_position <- 2
+    }
+    if (baseline_treatment_position < 1 || baseline_treatment_position > length(treatments)) {
+      stop("baseline_treatment_position debe estar entre 1 y ", length(treatments))
+    }
+    # Definir otros tratamientos (todos excepto baseline)
+    other_treatments <- treatments[treatments != baseline_treatment]
+    
+    # Reordenar: colocar baseline_treatment en la posición especificada
+    # NOTA: En R, vector[1:0] NO devuelve un vector vacío, sino el primer elemento, por eso necesitamos caso especial
+    if (baseline_treatment_position == 1) {
+      # Si es posición 1, baseline va primero, luego todos los demás
+      treatments <- c(baseline_treatment, other_treatments)
+    } else {
+      # Caso general: insertar baseline en la posición especificada
+      treatments <- c(other_treatments[1:(baseline_treatment_position-1)], 
+                      baseline_treatment, 
+                      other_treatments[baseline_treatment_position:length(other_treatments)])
+    }
   }
   
   cat("Tratamientos a comparar:", paste(treatments, collapse = ", "), "\n")
@@ -81,12 +104,22 @@ rainbow_comparison_plot <- function(
   treatment_cols    <- list()
   
   for (treatment in treatments) {
+    # Filtrar metadatos usando el tratamiento como carácter, no como factor
     treatment_metadata <- metadata %>%
-      filter(!!sym(treatment_col) == treatment)
+      filter(as.character(!!sym(treatment_col)) == treatment)
     
-    treatment_samples[[treatment]] <- treatment_metadata[[sample_col]]
+    # Obtener muestras únicas para este tratamiento (evitar duplicados dentro del mismo tratamiento)
+    # Si una muestra aparece múltiples veces para el mismo tratamiento, solo se cuenta una vez (no debería pasar, pero avisará si ocurre)
+    treatment_samples[[treatment]] <- unique(treatment_metadata[[sample_col]])
     
-    cat("  ", treatment, ":", length(treatment_samples[[treatment]]), "muestras\n")
+    n_total <- nrow(treatment_metadata)
+    n_unique <- length(treatment_samples[[treatment]])
+    if (n_total > n_unique) {
+      cat("    WARNING: ", treatment, " tenía ", n_total, " filas en metadatos pero solo ", n_unique, " muestras únicas\n")
+    }
+    
+    # Esta impresión debe mostrar 10 muestras (ejemplo)
+    cat("    ", treatment, ":", length(treatment_samples[[treatment]]), "muestras\n")
   }
   
   # Verificar que haya muestras suficientes
@@ -94,35 +127,41 @@ rainbow_comparison_plot <- function(
     stop("Algunos tratamientos no tienen muestras")
   }
   
-  # Calcular abundancias medias para cada tratamiento
+  # Obtener todas las columnas de muestras
   all_sample_cols <- unlist(treatment_samples)
-  abundance_means <- abundance_data %>%
+  
+  # Calcular abundancias medias para cada tratamiento
+  #> 1. quitar NA y asegurar que sean numéricos
+  abundance_data_clean <- abundance_data %>%
+    mutate(across(all_of(all_sample_cols), ~ as.numeric(replace_na(.x, 0))))
+  
+  #> 2. Calcular medias directamente de los datos originales (sin normalizar)
+  abundance_means <- abundance_data_clean %>%
     mutate(
-      across(all_of(all_sample_cols[all_sample_cols %in% colnames(abundance_data)]), 
-              ~as.numeric(replace_na(., 0)))
+      across(all_of(all_sample_cols[all_sample_cols %in% colnames(abundance_data_clean)]), 
+             ~as.numeric(replace_na(., 0)))
     )
   
   # Agregar columnas de medias por tratamiento
   for (treatment in treatments) {
-    cols_to_use <- treatment_samples[[treatment]]
-    cols_to_use <- cols_to_use[cols_to_use %in% colnames(abundance_means)]
-    
-    # Filtrar solo columnas numéricas
-    numeric_cols <- cols_to_use[sapply(abundance_means[cols_to_use], is.numeric)]
-    
-    cat("  -> Tratamiento:", treatment, "| Columnas encontradas:", length(cols_to_use), 
-        "| Columnas numéricas:", length(numeric_cols), "\n")
-    
-    if (length(numeric_cols) > 0) {
-      abundance_means[[paste0(treatment)]] <- rowMeans(
-        select(abundance_means, all_of(numeric_cols)), 
-        na.rm = TRUE
-      )
-    } else {
-      cat("  -> Warning: No hay columnas numéricas para", treatment, ", asignando 0\n")
-      abundance_means[[paste0(treatment)]] <- 0
-    }
+    abundance_means[[treatment]] <- rowMeans(
+      select(abundance_means, all_of(treatment_samples[[treatment]]))
+    )
   }
+  
+  # DEBUG: Imprimir información sobre las medias
+  #cat("\n=== DEBUG: Abundance Means ===\n")
+  #for (treatment in treatments) {
+    #treatment_sum <- sum(abundance_means[[treatment]], na.rm = TRUE)
+    #treatment_max <- max(abundance_means[[treatment]], na.rm = TRUE)
+    #treatment_min <- min(abundance_means[[treatment]], na.rm = TRUE)
+    #cat("  ", treatment, ":\n")
+    #cat("    Suma de medias:", treatment_sum, "\n")
+    #cat("    Máximo:", treatment_max, "\n")
+    #cat("    Mínimo:", treatment_min, "\n")
+    #cat("    Primeras 10 medias:", paste(head(abundance_means[[treatment]], 10), collapse = ", "), "\n")
+  #}
+  #cat("=== Fin DEBUG ===\n\n")
   
   # Filtrar datos válidos
   abundance_means <- abundance_means %>%
@@ -131,14 +170,18 @@ rainbow_comparison_plot <- function(
     )
   
   # === CLASIFICACIÓN (SIEMPRE NECESARIA) ===========================
-  other_treatments <- treatments[treatments != center_treatment]
+  if (is.null(baseline_treatment)) {
+    stop("baseline_treatment debe ser especificado para clasificar invasores/residentes")
+  }
+  
+  other_treatments <- treatments[treatments != baseline_treatment]
   
   abundance_means <- abundance_means %>%
     mutate(
-      is_invader = !!sym(center_treatment) == 0 & 
+      is_invader = !!sym(baseline_treatment) == 0 & 
         rowSums(select(., all_of(other_treatments)) > 0) > 0,
-      is_resident = !!sym(center_treatment) > 0,
-      center_treatment_rank = rank(-!!sym(center_treatment), ties.method = "min"),
+      is_resident = !!sym(baseline_treatment) > 0,
+      baseline_treatment_rank = rank(-!!sym(baseline_treatment), ties.method = "min"),
       total_mean = rowSums(select(., all_of(treatments))),
       invader_rank = rank(-total_mean, ties.method = "min")
     )
@@ -176,7 +219,7 @@ rainbow_comparison_plot <- function(
       values_to = "abundance"
     ) %>%
     mutate(
-      condition = factor(condition, levels = treatments),
+      condition = factor(condition),
       condition_numeric = as.numeric(condition),
       # Usar clade_name para el jitter, asumiendo que es la ID única del taxón
       jitter_offset = (as.numeric(factor(clade_name)) %% 7 - 3) * 0.02,
@@ -227,14 +270,14 @@ rainbow_comparison_plot <- function(
     if (highlight_invaders) {
       # Highlight Invaders: Colorear Invasores, Residentes en Gris
       color_group_calc <- with(plot_data_long, 
-                                if_else(is_invader, paste0("TotalRank_", invader_rank), "Resident"))
+                               if_else(is_invader, paste0("TotalRank_", invader_rank), "Resident"))
       line_color_calc <- color_group_calc # Las líneas deben ser coloreadas
     } else {
       # Estándar: Colorear Residentes por Rank, Invasores en Gris
       color_group_calc <- with(plot_data_long, 
-                                if_else(is_invader, "Invader", paste0("Rank_", center_treatment_rank)))
+                               if_else(is_invader, "Invader", paste0("Rank_", baseline_treatment_rank)))
       line_color_calc <- with(plot_data_long, 
-                              if_else(is_invader, NA_character_, color_group_calc)) # Las líneas de invasores son NA
+                               if_else(is_invader, NA_character_, color_group_calc)) # Las líneas de invasores son NA
     }
     
     plot_data_long <- plot_data_long %>%
@@ -318,7 +361,7 @@ rainbow_comparison_plot <- function(
       plot_title <- "Comparación Rainbow - Highlight Invaders"
       plot_subtitle <- "Invasores coloreados por abundancia (Rainbow), Residentes en gris"
       plot_caption <- paste0("Colores: Rainbow = invasores (ROJO=más abundante), Gris = residentes",
-                              if(show_labels) paste0("\nEtiquetas: Top ", label_top_abundant, " abundantes + Top ", label_invaders, " invasores") else "\nSin etiquetas")
+                             if(show_labels) paste0("\nEtiquetas: Top ", label_top_abundant, " abundantes + Top ", label_invaders, " invasores") else "\nSin etiquetas")
       
     } else {
       # Estándar: Gris para invasores, rainbow para abundancia
@@ -336,53 +379,61 @@ rainbow_comparison_plot <- function(
       plot_title <- "Comparación Rainbow (Ranking por Abundancia)"
       plot_subtitle <- paste0("Orden: ", paste(treatments, collapse = " -> "))
       plot_caption <- paste0("Colores: Rainbow = abundancia, Gris = invasores",
-                              if(show_labels) paste0("\nEtiquetas: Top ", label_top_abundant, " abundantes + Top ", label_invaders, " invasores") else "\nSin etiquetas")
+                             if(show_labels) paste0("\nEtiquetas: Top ", label_top_abundant, " abundantes + Top ", label_invaders, " invasores") else "\nSin etiquetas")
     }
     color_guide <- "none"
   }
   
   # Título común
   plot_title <- paste0(plot_title, 
-                        if(!is.null(taxon_level)) paste0(" - ", taxon_level) else "",
-                        " - ", paste(treatments, collapse = " vs "))
+                       if(!is.null(taxon_level)) paste0(" - ", taxon_level) else "",
+                       " - ", paste(treatments, collapse = " vs "))
   
-  # Crear el plot
+  
+  # === DEFINIR ESCALA Y LOGARÍTMICA CON EJE SECUNDARIO ===
+  
+  abundance_values_for_scale <- plot_data_long$abundance
   p <- ggplot(plot_data_long, aes(x = condition_jitter, y = abundance)) +
-    # Borde blanco para highlight (si aplica)
-    {if(highlight_invaders && !use_taxonomy_coloring) geom_point(aes(color = color_group, size = point_size + 0.5), color = "white", alpha = 1, shape = 16)} +
-    # Líneas y puntos principales
-    geom_line(data = plot_data_long %>% filter(abundance > 0), #> no poner líneas hacia los taxones en Y=0
-              aes(group = clade_name, color = line_color), alpha = 0.5, linewidth = 0.5) +
-    geom_point(aes(color = color_group, size = point_size), alpha = 0.8) +
-    scale_color_manual(
-      values = color_scheme,
-      na.value = "black", na.translate = FALSE, guide = color_guide
-    ) +
-    scale_size_continuous(range = c(0.5, 4), guide = "none") +
-    scale_x_continuous(
-      breaks = 1:length(treatments),
-      labels = treatments
-    ) +
-    scale_y_log10(labels = scales::comma_format()) +
-    labs(
-      title = plot_title,
-      subtitle = plot_subtitle,
-      x = "Tratamiento",
-      y = "Abundancia Relativa (log10)",
-      caption = plot_caption
-    ) +
-    theme_minimal() +
-    theme(
-      plot.title = element_text(size = 14, face = "bold"),
-      plot.subtitle = element_text(size = 12),
-      axis.title = element_text(size = 11),
-      axis.text = element_text(size = 10),
-      axis.text.x = element_text(angle = 45, hjust = 1),
-      panel.grid.minor = element_blank(),
-      plot.caption = element_text(size = 9, hjust = 0),
-      legend.position = "right",
-      legend.box.margin = margin(l = 10)
-    )
+  # Borde blanco para highlight (si aplica)
+  {if(highlight_invaders && !use_taxonomy_coloring) geom_point(aes(color = color_group, size = point_size + 0.5), color = "white", alpha = 1, shape = 16)} +
+  
+  # Líneas y puntos principales
+  geom_line(data = plot_data_long %>% filter(abundance > 0), 
+            aes(group = clade_name, color = line_color), alpha = 0.5, linewidth = 0.5) +
+  geom_point(aes(color = color_group, size = point_size), alpha = 0.8) +
+  
+  scale_color_manual(
+    values = color_scheme,
+    na.value = "black", na.translate = FALSE, guide = color_guide
+  ) +
+  scale_size_continuous(range = c(0.5, 4), guide = "none") +
+  scale_x_continuous(
+    breaks = 1:length(treatments),
+    labels = treatments
+  ) +
+  scale_y_log10(
+    labels = scales::label_percent(accuracy = 0.001, scale = 1),
+    breaks = c(0.001, 0.01, 0.1, 1, 3, 10, 20, 100),
+  ) + 
+  labs(
+    title = plot_title,
+    subtitle = plot_subtitle,
+    x = "Tratamiento",
+    y = "Abundancia Relativa (%)",
+    caption = plot_caption
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(size = 11),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    plot.caption = element_text(size = 9, hjust = 0),
+    legend.position = "right",
+    legend.box.margin = margin(l = 10)
+  )
   
   # Agregar etiquetas si se solicitan
   if (show_labels && exists("top_labels") && nrow(top_labels) > 0) {
@@ -402,12 +453,20 @@ rainbow_comparison_plot <- function(
       filter(abundance > 0)
     
     if (nrow(label_data) > 0) {
-      p <- p + ggrepel::geom_text_repel(
-        data = label_data,
-        aes(x = condition_jitter, y = abundance, label = label),
-        size = 2.5, color = "black", alpha = 0.8,
-        max.overlaps = 20, force = 2, force_pull = 0.5
-      )
+      if (requireNamespace("ggrepel", quietly = TRUE)) {
+        p <- p + ggrepel::geom_text_repel(
+          data = label_data,
+          aes(x = condition_jitter, y = abundance, label = label),
+          size = 2.5, color = "black", alpha = 0.8,
+          max.overlaps = 20, force = 2, force_pull = 0.5
+        )
+      } else {
+        p <- p + geom_text(
+          data = label_data,
+          aes(x = condition_jitter, y = abundance, label = label),
+          size = 2.5, color = "black", alpha = 0.8
+        )
+      }
     }
   }
   
