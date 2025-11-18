@@ -302,6 +302,18 @@ rainbow_comparison_plot <- function(
       )
     )
   
+  # Identificar taxones que tienen abundancia > 0 en baseline
+  # Estos taxones mantendrán sus líneas incluso si tienen puntos con 0 en otros tratamientos
+  taxons_with_abundance_in_baseline <- plot_data_long %>%
+    filter(condition == baseline_treatment, abundance == 0) %>%
+    distinct(clade_name) %>%
+    pull(clade_name)
+  
+  # Filtrar: eliminar puntos con abundancia 0, EXCEPTO si el taxón tiene == 0 en baseline
+  # Esto elimina las líneas asociadas a esos puntos
+  plot_data_long_filtered <- plot_data_long %>%
+    filter(abundance > 0 | clade_name %in% taxons_with_abundance_in_baseline)
+  
   # Identificar taxones para etiquetar (se usa total_mean, independiente del coloring)
   if (show_labels) {
     top_labels <- abundance_means %>%
@@ -392,14 +404,13 @@ rainbow_comparison_plot <- function(
   
   # === DEFINIR ESCALA Y LOGARÍTMICA CON EJE SECUNDARIO ===
   
-  abundance_values_for_scale <- plot_data_long$abundance
-  p <- ggplot(plot_data_long, aes(x = condition_jitter, y = abundance)) +
+  abundance_values_for_scale <- plot_data_long_filtered$abundance
+  p <- ggplot(plot_data_long_filtered, aes(x = condition_jitter, y = abundance)) +
   # Borde blanco para highlight (si aplica)
   {if(highlight_invaders && !use_taxonomy_coloring) geom_point(aes(color = color_group, size = point_size + 0.5), color = "white", alpha = 1, shape = 16)} +
   
   # Líneas y puntos principales
-  geom_line(data = plot_data_long %>% filter(abundance > 0), 
-            aes(group = clade_name, color = line_color), alpha = 0.5, linewidth = 0.5) +
+  geom_line(aes(group = clade_name, color = line_color), alpha = 0.5, linewidth = 0.5) +
   geom_point(aes(color = color_group, size = point_size), alpha = 0.8) +
   
   scale_color_manual(
